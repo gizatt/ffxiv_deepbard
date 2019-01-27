@@ -19,7 +19,7 @@ def play_note(key, on, off, verbose=True):
     keyboard.release(key)
     time.sleep(off)
 
-for on_time in [0.1, 0.05, 0.025]:
+for on_time in [0.1, 0.1, 0.1]:
     for k in [0, 5, 9, 7]:
         steps = [2, 2, 3, 5]
         step_i = 0

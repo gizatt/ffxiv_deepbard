@@ -27,9 +27,9 @@ class MonophonicPerformer():
 
     def enqueue(self, note):
         assert(isinstance(note, NoteQueueEntry))
-        assert(note.note >= 0 and note.note < len(self.keys_string))
-        with self.lock:
-            self.note_queue.append(note)
+        if note.note >= 0 and note.note < len(self.keys_string):
+            with self.lock:
+                self.note_queue.append(note)
 
     def start_playing(self):
         self.start_time = time.time()
@@ -69,24 +69,50 @@ class MonophonicPerformer():
 
 if __name__ == "__main__":
     try:
-        MIDI_PATH = "data/FF6Boss.mid"
+        MIDI_PATH = "data/Everytime_We_Touch.mid"
         piano_roll = midi_filename_to_piano_roll(MIDI_PATH)
         midi_data = pretty_midi.PrettyMIDI(MIDI_PATH)
-        instrument_num = 0
-        notes = midi_data.instruments[instrument_num].notes
+        notes = []
+        for instrument_num in [0, 1]:
+            print("Instrument %d has %d notes" % (instrument_num,len(midi_data.instruments[instrument_num].notes)))
+            notes += midi_data.instruments[instrument_num].notes
+        print("%d notes total" % len(notes))
+
+        # Clear out notes that are lower simultaneous with other notes
+        good_notes_mask = []
+        for note_i in range(len(notes)):
+            this_start = notes[note_i].start
+            this_end = notes[note_i].end
+            this_pitch = notes[note_i].pitch
+            reject = False
+            for other_note_i in range(len(notes)):
+                if note_i == other_note_i:
+                    continue
+                if (notes[other_note_i].start >= this_start - 0.01 and
+                    notes[other_note_i].start <= this_start + 0.2 and
+                    notes[other_note_i].pitch > this_pitch):
+                    reject = True
+                    print("Note %s, rejecting bc note %s" % (str(notes[other_note_i]), str(notes[note_i])))
+                    continue
+            if not reject:
+                good_notes_mask.append(note_i)
+
+        notes = [notes[x] for x in good_notes_mask]
+        notes = sorted(notes, key=lambda x: x.start)
         intervals = np.array([[note.start, note.end] for note in notes])
         pitches = np.array([note.pitch for note in notes])
 
         c4 = 12*4
         performer = MonophonicPerformer(base_note=c4)
-        performer.start_playing()
         for i in range(len(notes)):
             performer.enqueue(
                 NoteQueueEntry(
                     note=pitches[i]-12*4,
                     start=intervals[i][0],
                     stop=intervals[i][1]))
-            time.sleep(0.1)
+
+        print("STARTING...")
+        performer.start_playing()
         performer.wait_for_stop_playing()
 
     except KeyboardInterrupt as e: 

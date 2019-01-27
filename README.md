@@ -1,5 +1,5 @@
 ## TODO / Notes
 
-`note_input.py` works great. Immediate TODO is to have it
-time relative to some kind of consistent clock; using delays causes
-timing shifts to build up.
+- Completely refactor into a piano-roll based system that,
+at each time step, compares the current piano roll slice to the
+recent one and decides what note to prioritize / move to.
