@@ -11,54 +11,91 @@ from data_loading import midi_filename_to_piano_roll
 
 default_keys_string = '''aksldf;g'h[jq2w3er5t6y7ui]z\\xc,v.b/nm'''
 
-NoteQueueEntry = namedtuple('NoteQueueEntry', ['start', 'stop', 'note'])
-
 class MonophonicPerformer():
+    ''' Allows thread-safe queueing of future piano roll
+    slices (quantized in terms of notes and tempo), and manages
+    real-time playing of the queued slices against the system clock.
+    Manages priotiziation of voices to play. '''
     # Base note of C4
-    def __init__(self, keys_string=default_keys_string, base_note=12*4):
+    def __init__(self, keys_string=default_keys_string, base_note=12*4,
+                 beat_divisions=4, buffer_size=1024, default_tempo=120):
         self.keys_string = keys_string
+        self.beat_divisions = beat_divisions
+        self.num_keys = len(self.keys_string)
         self.playing = False
-        # Each queue entry should be an interval (start, stop)
-        # and a note (range 0, len(default_keys_string))
-        self.note_queue = []
+        self.buffer_size = buffer_size
+        self.note_buffer = np.zeros(self.num_keys, self.buffer_size)
+        self.tempo_buffer = np.ones(self.buffer_size)*default_tempo
         self.lock = Lock()
         self.playing_thread = None
+        self.note_buffer_head = 0
         self.keyboard = Controller()
 
-    def enqueue(self, note):
-        assert(isinstance(note, NoteQueueEntry))
-        if note.note >= 0 and note.note < len(self.keys_string):
-            with self.lock:
-                self.note_queue.append(note)
+    def set_piano_roll_slice(self, slice_index, piano_slice, tempo=None):
+        if piano_slice.shape != (self.num_keys,):
+            raise ValueError("Slice was wrong shape: got %s" % piano_slice.shape)
+        with self.lock:
+            if slice_index <= self.note_buffer_head:
+                print("This slice is in the past, skipping.")
+                return
+            write_ind = (self.note_buffer_head + slice_index) % self.num_keys
+            self.note_buffer[:, write_ind] = piano_roll[:]
+            if tempo is not None:
+                self.tempo_buffer[write_ind] = tempo
+
+    def decideAndExecuteAction(self, current_slice, last_slice, last_note):
+        # Dumb baseline:
+        # If the last note was nothing or is not continued,
+        # take the highest note in the current slice.
+        if last_note is None or current_slice[last_note] == 0:
+            candidates = np.nonzero(current_slice)
+            if len(candidates) > 0:
+                new_note = candidates[-1]
+            else:
+                new_note = None
+        else: 
+            # Otherwise continue the current note
+            new_note = last_note
+        
+        # Release events
+        if last_note is not None and new_note is not last_note:
+            self.keyboard.release(self.keys_string[last_note])
+        
+        # Press events
+        if new_note is not None and new_note is not last_note:
+            self.keyboard.press(self.keys_string[new_note])
+
+        return new_note
 
     def start_playing(self):
-        self.start_time = time.time()
         self.playing = True
         self.playing_thread = Thread(target=self.play)
         self.playing_thread.start()
 
     def play(self):
+        current_slice = np.zeros(self.num_keys)
+        last_note_time = time.time()
+        last_note = None
         while self.playing:
-            noteQueueEntry = None
             with self.lock:
-                if len(self.note_queue) > 0:
-                    noteQueueEntry = self.note_queue.pop(0)
-            # Play note, if we have one.
-            if noteQueueEntry is not None:
-                t = time.time() - self.start_time
-                if noteQueueEntry.start - t > 0:
-                    time.sleep(noteQueueEntry.start - t)
-                self.keyboard.press(self.keys_string[noteQueueEntry.note])
-                t = time.time() - self.start_time
-                if noteQueueEntry.stop - t > 0:
-                    time.sleep(noteQueueEntry.stop - t)
-                self.keyboard.release(self.keys_string[noteQueueEntry.note])
-            time.sleep(0.01)
+                last_slice = current_slice
+                current_slice = self.note_buffer[:, self.note_buffer_head]
+                current_tempo = self.tempo_buffer[self.note_buffer_head]
+                self.note_buffer_head = (self.note_buffer_head + 1) % self.num_keys
 
-    def wait_for_stop_playing(self):
+            # Given current and last note to play, decide current action.
+            last_note = self.decideAndExecuteAction(current_slice, last_slice, last_note)
+            # Tempo is in BPM
+            next_note_time = last_note_time + 60. / (current_tempo * self.beat_divisions)
+            last_note_time = time.time()
+            t = next_note_time - time.time()
+            if t > 0:
+                time.sleep(t)
+
+    def wait_for_stop_playing(self, final_index):
         while True:
             with self.lock:
-                if len(self.note_queue) == 0:
+                if self.note_buffer_head >= final_index:
                     break
         self.stop_playing()
 
@@ -70,8 +107,9 @@ class MonophonicPerformer():
 if __name__ == "__main__":
     try:
         MIDI_PATH = "data/Everytime_We_Touch.mid"
-        piano_roll = midi_filename_to_piano_roll(MIDI_PATH)
+        piano_roll, tempo_roll = midi_filename_to_piano_roll(MIDI_PATH)
         midi_data = pretty_midi.PrettyMIDI(MIDI_PATH)
+        
         notes = []
         for instrument_num in [0, 1]:
             print("Instrument %d has %d notes" % (instrument_num,len(midi_data.instruments[instrument_num].notes)))

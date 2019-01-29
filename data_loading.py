@@ -1,5 +1,6 @@
 import numpy as np
 import pretty_midi
+import scipy as sp
 import torch
 import torch.utils.data as data
 
@@ -21,7 +22,12 @@ def midi_filename_to_piano_roll(midi_filename, beat_divisions=4):
     piano_roll = midi_data.get_piano_roll(times=beat_times)
     # Pressed notes are replaced by 1
     piano_roll[piano_roll > 0] = 1
-    return piano_roll
+
+    # Tempos:
+    tempo_change_times, tempi = midi_data.get_tempo_changes()
+    tempo_roll = sp.interpolate.interp1d(tempo_change_times, tempi, kind='linear')[beat_times]
+
+    return piano_roll, tempo_roll
 
 
 def pad_piano_roll(piano_roll, max_length=132333, pad_value=0):
