@@ -55,23 +55,18 @@ class NotesGenerationDataset(data.Dataset):
             lambda filename: os.path.join(
                 midi_folder_path, filename),midi_filenames)
         self.midi_full_filenames = list(midi_full_filenames)
-        if longest_sequence_length is None:
-            self.update_the_max_length()
 
         # Preload all data. We'll never have *that* much.
         def load_piano_roll(filename):
+            print("Loading %s" % filename)
             piano_roll, tempos = midi_filename_to_piano_roll(
                 filename)
             # Cut down to the selected note range
             return piano_roll[self.lowest_note_num:self.highest_note_num, :]
         self.piano_rolls = [load_piano_roll(filename) for filename in self.midi_full_filenames]
-
-    def update_the_max_length(self):
-        sequences_lengths = map(lambda filename: 
-            midi_filename_to_piano_roll(filename)[0].shape[1],
-            self.midi_full_filenames)
-        max_length = max(sequences_lengths)
-        self.longest_sequence_length = max_length
+        
+        if longest_sequence_length is None:
+            self.longest_sequence_length = max(roll.shape[1] for roll in self.piano_rolls)
 
     def __len__(self):
         return len(self.midi_full_filenames)
