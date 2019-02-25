@@ -1,5 +1,7 @@
 ## TODO / Notes
 
-- Completely refactor into a piano-roll based system that,
-at each time step, compares the current piano roll slice to the
-recent one and decides what note to prioritize / move to.
+- Piano roll refactor is halfway done, but seems to have some bugs.
+- Given past N piano slices, predicting which note in the next slice
+is melody is a pretty reasonable supervised learning problem -- generate
+data by data augmentation, primarily, by taking truly monophonic midis
+and adding relatively random noise.
