@@ -26,9 +26,11 @@ def midi_filename_to_piano_roll(midi_filename, beat_divisions=4):
 
     # Tempos:
     tempo_change_times, tempi = midi_data.get_tempo_changes()
-    print(tempo_change_times, tempi)
     if len(tempo_change_times) > 1:
-        tempo_roll = interp1d(tempo_change_times, tempi, kind='linear')[beat_times]
+        tempo_roll = interp1d(tempo_change_times, tempi,
+                kind='linear', bounds_error=False,
+                fill_value=(tempi[0], tempi[-1])
+            )(beat_times)
     else:
         tempo_roll = np.ones(beat_times.shape[0])*tempi[0]
 
@@ -37,7 +39,13 @@ def midi_filename_to_piano_roll(midi_filename, beat_divisions=4):
 
 class NotesGenerationDataset(data.Dataset):
     
-    def __init__(self, midi_folder_path, longest_sequence_length=1491):
+    def __init__(self, midi_folder_path,
+            longest_sequence_length=None,
+            lowest_note="C3",
+            highest_note="C7"):
+        self.lowest_note_num = pretty_midi.note_name_to_number(lowest_note)
+        self.highest_note_num = pretty_midi.note_name_to_number(highest_note)
+        self.num_notes = self.highest_note_num - self.lowest_note_num
         self.midi_folder_path = midi_folder_path
         # TODO(gizatt) Make this recursive within the training
         # folder for better organization.
@@ -49,7 +57,15 @@ class NotesGenerationDataset(data.Dataset):
         self.midi_full_filenames = list(midi_full_filenames)
         if longest_sequence_length is None:
             self.update_the_max_length()
-    
+
+        # Preload all data. We'll never have *that* much.
+        def load_piano_roll(filename):
+            piano_roll, tempos = midi_filename_to_piano_roll(
+                filename)
+            # Cut down to the selected note range
+            return piano_roll[self.lowest_note_num:self.highest_note_num, :]
+        self.piano_rolls = [load_piano_roll(filename) for filename in self.midi_full_filenames]
+
     def update_the_max_length(self):
         sequences_lengths = map(lambda filename: 
             midi_filename_to_piano_roll(filename)[0].shape[1],
@@ -61,9 +77,7 @@ class NotesGenerationDataset(data.Dataset):
         return len(self.midi_full_filenames)
     
     def __getitem__(self, index):
-        midi_full_filename = self.midi_full_filenames[index]
-        piano_roll, tempos = midi_filename_to_piano_roll(
-            midi_full_filename)
+        piano_roll = self.piano_rolls[index]
         
         # Shifting by one time step
         sequence_length = piano_roll.shape[1] - 1
@@ -71,8 +85,6 @@ class NotesGenerationDataset(data.Dataset):
         # Shifting by one time step
         input_sequence = piano_roll[:, :-1]
         ground_truth_sequence = piano_roll[:, 1:]
-        num_notes = piano_roll.shape[0]
-
         # padding sequence so that all of them have the same length,
         # padding with zeros.
         # TODO(gizatt): What if I use mode="wrap" here? I'll have less
@@ -82,13 +94,15 @@ class NotesGenerationDataset(data.Dataset):
         # cadences / finishing phrases?
         input_sequence_padded = np.pad(
             input_sequence,
-            (num_notes, self.longest_sequence_length),
+            pad_width=((0, 0), 
+              (0, self.longest_sequence_length-input_sequence.shape[1])),
             mode="constant",
             constant_values=0).T
-        
+
         ground_truth_sequence_padded = np.pad(
             ground_truth_sequence,
-            (num_notes, self.longest_sequence_length),
+            pad_width=((0, 0), 
+              (0, self.longest_sequence_length-input_sequence.shape[1])),
             mode="constant",
             constant_values=-100).T
         
@@ -98,7 +112,11 @@ class NotesGenerationDataset(data.Dataset):
 
     
 def post_process_sequence_batch(batch_tuple):
-    
+    # Reorder sample batches into
+    # order of descending sequence length,
+    # as required by an eventual call to
+    # pack_padded_sequence in the RNN.
+
     input_sequences, output_sequences, lengths = batch_tuple
     
     splitted_input_sequence_batch = input_sequences.split(split_size=1)
@@ -112,7 +130,6 @@ def post_process_sequence_batch(batch_tuple):
     training_data_tuples_sorted = sorted(training_data_tuples,
                                          key=lambda p: int(p[2]),
                                          reverse=True)
-
     splitted_input_sequence_batch, splitted_output_sequence_batch, splitted_lengths_batch = zip(*training_data_tuples_sorted)
 
     input_sequence_batch_sorted = torch.cat(splitted_input_sequence_batch)
