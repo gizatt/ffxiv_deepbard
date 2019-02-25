@@ -1,6 +1,7 @@
 import numpy as np
+import os
 import pretty_midi
-import scipy as sp
+from scipy.interpolate import interp1d
 import torch
 import torch.utils.data as data
 
@@ -8,7 +9,7 @@ import torch.utils.data as data
 # https://github.com/SudharshanShanmugasundaram/Music-Generation/blob/master/notebooks/musicGeneration.ipynb
 
 def midi_filename_to_piano_roll(midi_filename, beat_divisions=4):
-    
+
     midi_data = pretty_midi.PrettyMIDI(midi_filename)
     # Use auto-detected tempo to get flattened piano roll
     beat_times = midi_data.get_beats()
@@ -25,60 +26,44 @@ def midi_filename_to_piano_roll(midi_filename, beat_divisions=4):
 
     # Tempos:
     tempo_change_times, tempi = midi_data.get_tempo_changes()
-    tempo_roll = sp.interpolate.interp1d(tempo_change_times, tempi, kind='linear')[beat_times]
+    print(tempo_change_times, tempi)
+    if len(tempo_change_times) > 1:
+        tempo_roll = interp1d(tempo_change_times, tempi, kind='linear')[beat_times]
+    else:
+        tempo_roll = np.ones(beat_times.shape[0])*tempi[0]
 
     return piano_roll, tempo_roll
-
-
-def pad_piano_roll(piano_roll, max_length=132333, pad_value=0):
-        
-    original_piano_roll_length = piano_roll.shape[1]
-    
-    padded_piano_roll = np.zeros((88, max_length))
-    padded_piano_roll[:] = pad_value
-    
-    padded_piano_roll[:, -original_piano_roll_length:] = piano_roll
-
-    return padded_piano_roll
 
 
 class NotesGenerationDataset(data.Dataset):
     
     def __init__(self, midi_folder_path, longest_sequence_length=1491):
-        
         self.midi_folder_path = midi_folder_path
-        
+        # TODO(gizatt) Make this recursive within the training
+        # folder for better organization.
         midi_filenames = os.listdir(midi_folder_path)
-        
         self.longest_sequence_length = longest_sequence_length
-        
-        midi_full_filenames = map(lambda filename: os.path.join(midi_folder_path, filename),midi_filenames)
-        
+        midi_full_filenames = map(
+            lambda filename: os.path.join(
+                midi_folder_path, filename),midi_filenames)
         self.midi_full_filenames = list(midi_full_filenames)
-        
         if longest_sequence_length is None:
-            
             self.update_the_max_length()
     
-    
     def update_the_max_length(self):
-        
-        sequences_lengths = map(lambda filename: midi_filename_to_piano_roll(filename).shape[1],self.midi_full_filenames)
-        
+        sequences_lengths = map(lambda filename: 
+            midi_filename_to_piano_roll(filename)[0].shape[1],
+            self.midi_full_filenames)
         max_length = max(sequences_lengths)
-        
         self.longest_sequence_length = max_length
-                
-    
+
     def __len__(self):
-        
         return len(self.midi_full_filenames)
     
     def __getitem__(self, index):
-        
         midi_full_filename = self.midi_full_filenames[index]
-        
-        piano_roll = midi_filename_to_piano_roll(midi_full_filename)
+        piano_roll, tempos = midi_filename_to_piano_roll(
+            midi_full_filename)
         
         # Shifting by one time step
         sequence_length = piano_roll.shape[1] - 1
@@ -86,16 +71,30 @@ class NotesGenerationDataset(data.Dataset):
         # Shifting by one time step
         input_sequence = piano_roll[:, :-1]
         ground_truth_sequence = piano_roll[:, 1:]
-                
-        # padding sequence so that all of them have the same length
-        input_sequence_padded = pad_piano_roll(input_sequence, max_length=self.longest_sequence_length)
+        num_notes = piano_roll.shape[0]
+
+        # padding sequence so that all of them have the same length,
+        # padding with zeros.
+        # TODO(gizatt): What if I use mode="wrap" here? I'll have less
+        # "wasted" training data space and not encourage doing absolutely
+        # nothing (which will be an attractor for a network trained with
+        # long empty stretches?), but will have weird edge effects after
+        # cadences / finishing phrases?
+        input_sequence_padded = np.pad(
+            input_sequence,
+            (num_notes, self.longest_sequence_length),
+            mode="constant",
+            constant_values=0).T
         
-        ground_truth_sequence_padded = pad_piano_roll(ground_truth_sequence,max_length=self.longest_sequence_length,pad_value=-100)
-                
-        input_sequence_padded = input_sequence_padded.transpose()
-        ground_truth_sequence_padded = ground_truth_sequence_padded.transpose()
+        ground_truth_sequence_padded = np.pad(
+            ground_truth_sequence,
+            (num_notes, self.longest_sequence_length),
+            mode="constant",
+            constant_values=-100).T
         
-        return (torch.FloatTensor(input_sequence_padded),torch.LongTensor(ground_truth_sequence_padded),torch.LongTensor([sequence_length]) )
+        return (torch.FloatTensor(input_sequence_padded),
+                torch.LongTensor(ground_truth_sequence_padded),
+                torch.LongTensor([sequence_length]) )
 
     
 def post_process_sequence_batch(batch_tuple):
